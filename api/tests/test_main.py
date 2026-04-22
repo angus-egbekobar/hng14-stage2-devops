@@ -1,8 +1,9 @@
-import pytest
+import sys
+import os
 from unittest.mock import MagicMock, patch
-from fastapi.testclient import TestClient
 
-# Patch redis before importing app
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 mock_redis = MagicMock()
 
 with patch("redis.Redis", return_value=mock_redis):
@@ -10,6 +11,8 @@ with patch("redis.Redis", return_value=mock_redis):
 
 import main
 main.r = mock_redis
+
+from fastapi.testclient import TestClient  # noqa: E402
 
 client = TestClient(app)
 
@@ -30,7 +33,7 @@ def test_create_job_returns_job_id():
     assert resp.status_code == 200
     data = resp.json()
     assert "job_id" in data
-    assert len(data["job_id"]) == 36  # UUID length
+    assert len(data["job_id"]) == 36
 
 
 def test_create_job_pushes_to_redis():
