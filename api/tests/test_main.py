@@ -1,18 +1,17 @@
 import sys
 import os
 from unittest.mock import MagicMock, patch
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 mock_redis = MagicMock()
 
 with patch("redis.Redis", return_value=mock_redis):
-    from main import app
+    from main import app  # noqa: E402
 
-import main
+import main  # noqa: E402
 main.r = mock_redis
-
-from fastapi.testclient import TestClient  # noqa: E402
 
 client = TestClient(app)
 
