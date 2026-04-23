@@ -33,13 +33,12 @@ jobs:
           node-version: "20"
 
       - name: Install ESLint
-        run: npm install -g eslint@8
+        working-directory: frontend
+        run: npm install --save-dev eslint @eslint/js
 
       - name: Lint JavaScript
-        run: |
-          eslint --env node --env es2021 \
-            --rule '{"no-unused-vars": "warn", "no-undef": "warn"}' \
-            --parser-options "ecmaVersion:2021" frontend/app.js
+        working-directory: frontend
+        run: npx eslint app.js
 
       - name: Install hadolint
         run: |
@@ -231,17 +230,14 @@ jobs:
             echo "No deploy target configured, skipping deploy"
             exit 0
           fi
-
           echo "$DEPLOY_KEY" > /tmp/deploy_key
           chmod 600 /tmp/deploy_key
-
           ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
             ${DEPLOY_USER}@${DEPLOY_HOST} << 'REMOTE'
           set -e
           cd ~/hng14-stage2-devops
           git pull origin main
           docker compose up -d --build --no-deps api
-
           for i in $(seq 1 12); do
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
               $(docker compose ps -q api) 2>/dev/null || echo "unknown")
@@ -250,7 +246,6 @@ jobs:
             [ $i -eq 12 ] && echo "Deploy failed" && exit 1
             sleep 5
           done
-
           docker compose up -d --build --no-deps worker
           docker compose up -d --build --no-deps frontend
           echo "Deploy complete"
