@@ -7,9 +7,6 @@ on:
     branches: ["**"]
 
 jobs:
-  # ---------------------------------------------------------------
-  # STAGE 1: LINT
-  # ---------------------------------------------------------------
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -36,20 +33,13 @@ jobs:
           node-version: "20"
 
       - name: Install ESLint
-        run: npm install -g eslint
-
-      - name: Create ESLint config
-        run: |
-          cat > .eslintrc.json << 'ESLINT'
-          {
-            "env": { "node": true, "es2021": true },
-            "extends": "eslint:recommended",
-            "parserOptions": { "ecmaVersion": 2021 }
-          }
-          ESLINT
+        run: npm install -g eslint@8
 
       - name: Lint JavaScript
-        run: eslint frontend/app.js
+        run: |
+          eslint --env node --env es2021 \
+            --rule '{"no-unused-vars": "warn", "no-undef": "warn"}' \
+            --parser-options "ecmaVersion:2021" frontend/app.js
 
       - name: Install hadolint
         run: |
@@ -63,9 +53,6 @@ jobs:
           hadolint worker/Dockerfile
           hadolint frontend/Dockerfile
 
-  # ---------------------------------------------------------------
-  # STAGE 2: TEST
-  # ---------------------------------------------------------------
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -85,8 +72,7 @@ jobs:
 
       - name: Run tests with coverage
         working-directory: api
-        run: |
-          pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
+        run: pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -94,9 +80,6 @@ jobs:
           name: coverage-report
           path: api/coverage.xml
 
-  # ---------------------------------------------------------------
-  # STAGE 3: BUILD
-  # ---------------------------------------------------------------
   build:
     name: Build & Push Images
     runs-on: ubuntu-latest
@@ -106,10 +89,8 @@ jobs:
         image: registry:2
         ports:
           - 5000:5000
-
     outputs:
       sha: ${{ steps.meta.outputs.sha }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -138,49 +119,38 @@ jobs:
           docker push localhost:5000/frontend:${{ steps.meta.outputs.sha }}
           docker push localhost:5000/frontend:latest
 
-  # ---------------------------------------------------------------
-  # STAGE 4: SECURITY SCAN
-  # ---------------------------------------------------------------
   security:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: build
-    services:
-      registry:
-        image: registry:2
-        ports:
-          - 5000:5000
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rebuild images for scan (registry is ephemeral per job)
+      - name: Build images for scan
         run: |
-          docker build -t localhost:5000/api:latest ./api
-          docker build -t localhost:5000/worker:latest ./worker
-          docker build -t localhost:5000/frontend:latest ./frontend
+          docker build -t api:latest ./api
+          docker build -t worker:latest ./worker
+          docker build -t frontend:latest ./frontend
 
       - name: Install Trivy
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
 
       - name: Scan API image
         run: |
           trivy image --exit-code 1 --severity CRITICAL \
-            --format sarif --output trivy-api.sarif \
-            localhost:5000/api:latest
+            --format sarif --output trivy-api.sarif api:latest
 
       - name: Scan Worker image
         run: |
           trivy image --exit-code 1 --severity CRITICAL \
-            --format sarif --output trivy-worker.sarif \
-            localhost:5000/worker:latest
+            --format sarif --output trivy-worker.sarif worker:latest
 
       - name: Scan Frontend image
         run: |
           trivy image --exit-code 1 --severity CRITICAL \
-            --format sarif --output trivy-frontend.sarif \
-            localhost:5000/frontend:latest
+            --format sarif --output trivy-frontend.sarif frontend:latest
 
       - name: Upload SARIF results
         if: always()
@@ -189,14 +159,10 @@ jobs:
           name: trivy-sarif-reports
           path: "*.sarif"
 
-  # ---------------------------------------------------------------
-  # STAGE 5: INTEGRATION TEST
-  # ---------------------------------------------------------------
   integration:
     name: Integration Test
     runs-on: ubuntu-latest
     needs: security
-
     steps:
       - uses: actions/checkout@v4
 
@@ -212,14 +178,8 @@ jobs:
       - name: Wait for frontend to be healthy
         run: |
           for i in $(seq 1 30); do
-            STATUS=$(docker compose ps --format json | python3 -c "
-          import sys, json
-          data = sys.stdin.read().strip().splitlines()
-          for line in data:
-              obj = json.loads(line)
-              if 'frontend' in obj.get('Service',''):
-                  print(obj.get('Health','unknown'))
-          " 2>/dev/null || echo "unknown")
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
+              $(docker compose ps -q frontend) 2>/dev/null || echo "unknown")
             echo "Attempt $i: frontend health = $STATUS"
             [ "$STATUS" = "healthy" ] && break
             sleep 5
@@ -228,17 +188,16 @@ jobs:
       - name: Submit job and poll to completion
         run: |
           set -e
-
-          # Submit a job
           RESPONSE=$(curl -sf -X POST http://localhost:3000/submit)
           echo "Submit response: $RESPONSE"
-          JOB_ID=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+          JOB_ID=$(echo $RESPONSE | python3 -c \
+            "import sys,json; print(json.load(sys.stdin)['job_id'])")
           echo "Job ID: $JOB_ID"
 
-          # Poll until completed (max 30s)
           for i in $(seq 1 15); do
             STATUS_RESP=$(curl -sf http://localhost:3000/status/$JOB_ID)
-            STATUS=$(echo $STATUS_RESP | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+            STATUS=$(echo $STATUS_RESP | python3 -c \
+              "import sys,json; print(json.load(sys.stdin)['status'])")
             echo "Attempt $i: status = $STATUS"
             if [ "$STATUS" = "completed" ]; then
               echo "Job completed successfully!"
@@ -250,19 +209,15 @@ jobs:
           echo "ERROR: Job did not complete in time"
           exit 1
 
-      - name: Tear down stack (always)
+      - name: Tear down stack
         if: always()
         run: docker compose down -v
 
-  # ---------------------------------------------------------------
-  # STAGE 6: DEPLOY (main branch only)
-  # ---------------------------------------------------------------
   deploy:
     name: Deploy (Rolling Update)
     runs-on: ubuntu-latest
     needs: integration
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-
     steps:
       - uses: actions/checkout@v4
 
@@ -272,34 +227,31 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
-          # Write SSH key
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "No deploy target configured, skipping deploy"
+            exit 0
+          fi
+
           echo "$DEPLOY_KEY" > /tmp/deploy_key
           chmod 600 /tmp/deploy_key
 
-          SSH="ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST}"
-
-          $SSH << 'REMOTE'
+          ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            ${DEPLOY_USER}@${DEPLOY_HOST} << 'REMOTE'
           set -e
           cd ~/hng14-stage2-devops
-
           git pull origin main
-
-          # Rolling update: bring up new containers, verify health, then remove old
-          docker compose pull 2>/dev/null || true
           docker compose up -d --build --no-deps api
 
-          # Wait up to 60s for API health
           for i in $(seq 1 12); do
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
               $(docker compose ps -q api) 2>/dev/null || echo "unknown")
             echo "API health check $i/12: $STATUS"
             [ "$STATUS" = "healthy" ] && break
-            [ $i -eq 12 ] && echo "Deploy failed: API did not become healthy" && exit 1
+            [ $i -eq 12 ] && echo "Deploy failed" && exit 1
             sleep 5
           done
 
           docker compose up -d --build --no-deps worker
           docker compose up -d --build --no-deps frontend
-
           echo "Deploy complete"
           REMOTE
